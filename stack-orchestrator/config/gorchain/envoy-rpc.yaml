@@ -21,6 +21,31 @@ static_resources:
             - name: agave
               domains: ["*"]
               routes:
+              # WebSocket route before the rpc_trash_route
+              - name: websocket_upgrade_trash
+                match:
+                  prefix: "/"
+                  headers:
+                  - name: ":authority"
+                    exact_match: "rpc.trashcoin.wtf"
+                  - name: upgrade
+                    exact_match: websocket
+                route:
+                  cluster: agave_ws
+                  timeout: 0s
+                  idle_timeout: 0s
+
+              # RPC route for rpc.trashcoin.wtf
+              - name: rpc_trash_route
+                match:
+                  prefix: "/"
+                  headers:
+                  - name: ":authority"
+                    exact_match: "rpc.trashcoin.wtf"
+                route:
+                  cluster: rpc_backend
+                  timeout: 300s
+
               - name: health
                 match:
                   path: "/health"
@@ -42,6 +67,7 @@ static_resources:
                   cluster: agave_ws
                   timeout: 0s
                   idle_timeout: 0s
+
               - name: default_rpc
                 match:
                   prefix: "/"
@@ -55,21 +81,25 @@ static_resources:
                     retry_back_off:
                       base_interval: 30s
                       max_interval: 30s
+
           http_filters:
           - name: envoy.filters.http.cache
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.cache.v3.CacheConfig
               typed_config:
                 "@type": type.googleapis.com/envoy.extensions.http.cache.simple_http_cache.v3.SimpleHttpCacheConfig
+
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
           access_log:
           - name: envoy.access_loggers.stdout
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
               log_format:
-                text_format: "[%START_TIME%] \"%REQ(:METHOD)% %REQ(:PATH)%\" %RESPONSE_CODE% ms D:%DURATION% ms\n"
+                text_format: "[%START_TIME%] \"%REQ(:METHOD)% %REQ(:PATH)%\" %RESPONSE_CODE% %REQ(UPGRADE)% ms D:%DURATION% ms\n"
+
       transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:
@@ -108,6 +138,21 @@ static_resources:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
   clusters:
+  - name: rpc_backend
+    connect_timeout: 5s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: rpc_backend
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 172.17.0.1
+                port_value: 8899
+    dns_lookup_family: V4_ONLY
+
   - name: agave_rpc
     connect_timeout: 10s
     type: STRICT_DNS
@@ -156,10 +201,11 @@ static_resources:
         "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
         explicit_http_config:
           http_protocol_options: {}
+        common_http_protocol_options:
+          idle_timeout: 0s
 
 admin:
   address:
     socket_address:
       address: 0.0.0.0
       port_value: 9901
-
